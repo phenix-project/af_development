@@ -107,14 +107,11 @@ def np_example_to_features(np_example: FeatureDict,
     if k =="msa_feat":
       n1,n2,n3,n4 = v.shape
       print("SHAPE:",n1,n2,n3,n4)
-      f1 = v[0]
-      f2 = v[1]
-      f3 = v[2]
-      f12 = f1 - f2
-      f13 = f1 - f3
-      f23 = f2 - f3
-      a12 = f12[f12 != 0]
-      print ("non-zero diffs for msa:",a12)
-
+      if n1 > 1:
+        f1 = v[0]
+        f2 = v[1]
+        f12 = f1 - f2
+        a12 = f12[f12 != 0]
+        print ("non-zero diffs for msa:",a12)
 
   return {k: v for k, v in features.items() if v.dtype != 'O'}

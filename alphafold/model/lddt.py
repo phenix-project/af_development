@@ -53,8 +53,8 @@ def lddt(predicted_points,
 
   assert len(predicted_points.shape) == 3
   assert predicted_points.shape[-1] == 3
-  assert true_points_mask.shape[-1] == 1
-  assert len(true_points_mask.shape) == 3
+  assert true_points_mask is None or true_points_mask.shape[-1] == 1
+  assert true_points_mask is None or len(true_points_mask.shape) == 3
 
   # Compute true and predicted distance matrices.
   dmat_true = jnp.sqrt(1e-10 + jnp.sum(
@@ -64,11 +64,17 @@ def lddt(predicted_points,
       (predicted_points[:, :, None] -
        predicted_points[:, None, :])**2, axis=-1))
 
-  dists_to_score = (
+  if true_points_mask:
+    dists_to_score = (
       (dmat_true < cutoff).astype(jnp.float32) * true_points_mask *
       jnp.transpose(true_points_mask, [0, 2, 1]) *
       (1. - jnp.eye(dmat_true.shape[1]))  # Exclude self-interaction.
-  )
+    )
+  else: # no mask
+    dists_to_score = (
+      (dmat_true < cutoff).astype(jnp.float32) * 
+      (1. - jnp.eye(dmat_true.shape[1]))  # Exclude self-interaction.
+    )
 
   # Shift unscored distances to be far away.
   dist_l1 = jnp.abs(dmat_true - dmat_predicted)

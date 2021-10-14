@@ -79,20 +79,24 @@ class AllAtomTest(parameterized.TestCase, absltest.TestCase):
     # pylint: enable=bad-whitespace
     global_rigid_transform = get_global_rigid_transform(
         rot_angle, translation, 1)
-
+    print("ROT TRANS",rot_angle,translation,global_rigid_transform)
     target_positions = r3.vecs_from_tensor(target_positions)
     pred_positions = r3.rigids_mul_vecs(
         global_rigid_transform, target_positions)
+    print ("START TARGET",target_positions[0])
+    print ("START PRED",pred_positions[0])
     positions_mask = np.ones(target_positions.x.shape[0])
 
     target_frames = get_identity_rigid(10)
     pred_frames = r3.rigids_mul_rigids(global_rigid_transform, target_frames)
+   
     frames_mask = np.ones(10)
 
     fape = all_atom.frame_aligned_point_error(
         pred_frames, target_frames, frames_mask, pred_positions,
         target_positions, positions_mask, L1_CLAMP_DISTANCE,
         L1_CLAMP_DISTANCE, epsilon=0)
+    print("FAPE VALUE",fape)
     self.assertAlmostEqual(fape, 0.)
 
   @parameterized.named_parameters(

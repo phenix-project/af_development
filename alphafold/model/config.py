@@ -103,7 +103,8 @@ CONFIG = ml_collections.ConfigDict({
             },
             'max_extra_msa': 1024,
             'msa_cluster_features': True,
-            'num_recycle': 3,
+            'num_recycle': 0, # changed to 0 2021-10-09 TT  NOTE change num_recycle in 2 places
+            'disable_jit': False,
             'reduce_msa_clusters_by_max_templates': False,
             'resample_msa_in_recycling': True,
             'template_features': [
@@ -178,7 +179,7 @@ CONFIG = ml_collections.ConfigDict({
             'masked_msa_replace_fraction': 0.15,
             'max_msa_clusters': 512,
             'max_templates': 4,
-            'num_ensemble': 1,
+            'num_ensemble': 1,  # XXX Set number of ensembles
         },
     },
     'model': {
@@ -324,7 +325,9 @@ CONFIG = ml_collections.ConfigDict({
             'deterministic': False,
             'subbatch_size': 4,
             'use_remat': False,
-            'zero_init': True
+            'zero_init': True,
+            'target_all_atom_positions': None,  # For comparison
+            'disable_jit': False, # in two places
         },
         'heads': {
             'distogram': {
@@ -396,7 +399,7 @@ CONFIG = ml_collections.ConfigDict({
                 'weight': 2.0
             },
         },
-        'num_recycle': 3,
+        'num_recycle': 0,  # TT 2021-10-09 NOTE change num_recycle in 2 places
         'resample_msa_in_recycling': True
     },
 })

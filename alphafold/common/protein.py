@@ -13,12 +13,14 @@
 # limitations under the License.
 
 """Protein data type."""
-import dataclasses
 import io
 from typing import Any, Mapping, Optional
-from alphafold.common import residue_constants
+
 from Bio.PDB import PDBParser
+import dataclasses
 import numpy as np
+
+from alphafold.common import residue_constants
 
 FeatureDict = Mapping[str, np.ndarray]
 ModelOutput = Mapping[str, Any]  # Is a nested dict.
@@ -47,7 +49,6 @@ class Protein:
   # representing the displacement of the residue from its ground truth mean
   # value.
   b_factors: np.ndarray  # [num_res, num_atom_type]
-
 
 def from_pdb_string(pdb_str: str, chain_id: Optional[str] = None) -> Protein:
   """Takes a PDB string and constructs a Protein object.
@@ -194,7 +195,7 @@ def ideal_atom_mask(prot: Protein) -> np.ndarray:
 
   `Protein.atom_mask` typically is defined according to the atoms that are
   reported in the PDB. This function computes a mask according to heavy atoms
-  that should be present in the given sequence of amino acids.
+  that should be present in the given seqence of amino acids.
 
   Args:
     prot: `Protein` whose fields are `numpy.ndarray` objects.
@@ -217,6 +218,7 @@ def from_prediction(features: FeatureDict, result: ModelOutput,
   Returns:
     A protein instance.
   """
+  print("Running from_prediction")
   fold_output = result['structure_module']
   if b_factors is None:
     b_factors = np.zeros_like(fold_output['final_atom_mask'])

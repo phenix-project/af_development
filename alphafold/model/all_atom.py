@@ -525,7 +525,6 @@ def torsion_angles_to_frames(
   all_frames_to_global = r3.rigids_mul_rigids(
       jax.tree_map(lambda x: x[:, None], backb_to_global),
       all_frames_to_backb)
-
   return all_frames_to_global
 
 
@@ -543,7 +542,6 @@ def frames_and_literature_positions_to_atom14_pos(
   Returns:
     Positions of all atom coordinates in global frame.
   """
-
   # Pick the appropriate transform for every atom.
   residx_to_group_idx = utils.batched_gather(
       residue_constants.restype_atom14_to_rigid_group, aatype)

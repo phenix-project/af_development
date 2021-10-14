@@ -123,6 +123,16 @@ def create_extra_msa_feature(batch):
 class AlphaFoldIteration(hk.Module):
   """A single recycling iteration of AlphaFold architecture.
 
+  NOTE: called from AlphaFold.__call__().do_call() with
+  impl = AlphaFoldIteration(self.config, self.global_config)
+        return impl(
+          ensembled_batch=ensembled_batch,
+          non_ensembled_batch=non_ensembled_batch,
+          is_training=is_training,
+          compute_loss=compute_loss,
+          ensemble_representations=ensemble_representations
+
+
   Computes ensembled (averaged) representations from the provided features.
   These representations are then passed to the various heads
   that have been requested by the configuration file. Each head also returns a
@@ -144,60 +154,16 @@ class AlphaFoldIteration(hk.Module):
                ensemble_representations=False,
                return_representations=False):
 
-    num_ensemble = jnp.asarray(ensembled_batch['seq_length'].shape[0])
+    print("Running AlphaFoldIteration")
 
+    num_ensemble = jnp.asarray(ensembled_batch['seq_length'].shape[0])
+    print("Ensemble representations:",ensemble_representations)
+    print("Number of ensembles: ",ensembled_batch['seq_length'].shape[0])
     if not ensemble_representations:
       assert ensembled_batch['seq_length'].shape[0] == 1
 
-    def slice_batch(i):
-      b = {k: v[i] for k, v in ensembled_batch.items()}
-      b.update(non_ensembled_batch)
-      return b
-
-    # Compute representations for each batch element and average.
-    evoformer_module = EmbeddingsAndEvoformer(
-        self.config.embeddings_and_evoformer, self.global_config)
-    batch0 = slice_batch(0)
-    representations = evoformer_module(batch0, is_training)
-
-    # MSA representations are not ensembled so
-    # we don't pass tensor into the loop.
-    msa_representation = representations['msa']
-    del representations['msa']
-
-    # Average the representations (except MSA) over the batch dimension.
-    if ensemble_representations:
-      def body(x):
-        """Add one element to the representations ensemble."""
-        i, current_representations = x
-        feats = slice_batch(i)
-        representations_update = evoformer_module(
-            feats, is_training)
-
-        new_representations = {}
-        for k in current_representations:
-          new_representations[k] = (
-              current_representations[k] + representations_update[k])
-        return i+1, new_representations
-
-      if hk.running_init():
-        # When initializing the Haiku module, run one iteration of the
-        # while_loop to initialize the Haiku modules used in `body`.
-        _, representations = body((1, representations))
-      else:
-        _, representations = hk.while_loop(
-            lambda x: x[0] < num_ensemble,
-            body,
-            (1, representations))
-
-      for k in representations:
-        if k != 'msa':
-          representations[k] /= num_ensemble.astype(representations[k].dtype)
-
-    representations['msa'] = msa_representation
-    batch = batch0  # We are not ensembled from here on.
-
     heads = {}
+    print("\nSetting up head_factory...",end = "")
     for head_name, head_config in sorted(self.config.heads.items()):
       if not head_config.weight:
         continue  # Do not instantiate zero-weight heads.
@@ -210,9 +176,84 @@ class AlphaFoldIteration(hk.Module):
           'predicted_lddt': PredictedLDDTHead,
           'predicted_aligned_error': PredictedAlignedErrorHead,
           'experimentally_resolved': ExperimentallyResolvedHead,
+
       }[head_name]
       heads[head_name] = (head_config,
                           head_factory(head_config, self.global_config))
+
+    # Set up a StructureModule that is independent of the main one. We are going
+    # to call this when we need a structure in the middle of a run
+
+    structure_head_config, _ = heads['structure_module']
+    local_structure_head = folding.StructureModule_dup(
+      structure_head_config,self.global_config,compute_loss = False,
+        name = 'structure_module_dup')
+
+    def slice_batch(i):
+      b = {k: v[i] for k, v in ensembled_batch.items()}
+      b.update(non_ensembled_batch)
+      return b
+
+    # Compute representations for each batch element and average.
+    evoformer_module = EmbeddingsAndEvoformer(
+        self.config.embeddings_and_evoformer, self.global_config)
+    batch0 = slice_batch(0)
+    representations = evoformer_module(batch0, is_training)
+    print("done")
+
+    # MSA representations are not ensembled so
+    # we don't pass tensor into the loop.
+    msa_representation = representations['msa']
+    del representations['msa']
+
+    # Average the representations (except MSA) over the batch dimension.
+    if ensemble_representations:
+      def body(x):
+        """Add one element to the representations ensemble."""
+        i, current_representations = x
+ 
+        feats = slice_batch(i)
+
+
+        representations_update = evoformer_module(
+            feats, is_training)
+        # Get coordinates for this update with local_structure_head
+        current_representations['msa'] = msa_representation
+        local_result = get_coordinates(local_structure_head, feats,
+         current_representations)
+        del current_representations['msa']
+        weight = local_result['lddt']
+        print("Weight (local lddt) on representation i",i,weight)
+
+        new_representations = {}
+        weight = 1.0  # weight to be set
+        for k in current_representations:  # k is like 'single_pair'          
+          new_representations[k] = (  # representations_update[k] is an array
+              current_representations[k] + representations_update[k] * weight)
+        return i+1, new_representations
+      print("Setting up and averaging representations...")
+      if hk.running_init():
+        # When initializing the Haiku module, run one iteration of the
+        # while_loop to initialize the Haiku modules used in `body`.
+        _, representations = body((1, representations))
+      else:
+  
+        if (not self.global_config.disable_jit): 
+          _, representations = hk.while_loop(
+            lambda x: x[0] < num_ensemble,
+            body,
+            (1, representations))
+        else:  # without haiku/jit
+          for ii in range(1, num_ensemble + 1):
+            _, representations = body((ii, representations)) 
+      print(" done with representations (N=%s)" %(num_ensemble))
+
+      for k in representations:
+        if k != 'msa':  # XXX normalize with weights...
+          representations[k] /= num_ensemble.astype(representations[k].dtype)
+
+    representations['msa'] = msa_representation
+    batch = batch0  # We are not ensembled from here on.
 
     total_loss = 0.
     ret = {}
@@ -234,11 +275,13 @@ class AlphaFoldIteration(hk.Module):
       if name in ('predicted_lddt', 'predicted_aligned_error'):
         continue
       else:
+        print("Running ",name," in factory")
         ret[name] = module(representations, batch, is_training)
         if 'representations' in ret[name]:
           # Extra representations from the head. Used by the structure module
           # to provide activations for the PredictedLDDTHead.
           representations.update(ret[name].pop('representations'))
+      # XXX can compute loss here e.g., for 'structure_module'
       if compute_loss:
         total_loss += loss(module, head_config, ret, name)
 
@@ -260,15 +303,34 @@ class AlphaFoldIteration(hk.Module):
       ret[name] = module(representations, batch, is_training)
       if compute_loss:
         total_loss += loss(module, head_config, ret, name, filter_ret=False)
-
+    print("Finished with prediction", ret is not None)
+    if ret:
+      print("AlphaFoldIter ret keys", list(ret.keys()))
     if compute_loss:
       return ret, total_loss
     else:
       return ret
 
+def get_coordinates(local_structure_head, batch, representations):
+    """ Get coordinates without doing anything else"""
+
+    # Get coordinates from representations (takes some time)
+    result = local_structure_head(representations,
+      batch, False, return_lddt = True, verbose = False)
+
+    pred_atom_positions = result.get('final_atom_positions',None)
+    lddt = result.get('lddt',0.)
+    new_result = {}
+    new_result['lddt'] = lddt
+    new_result['final_atom_positions'] = pred_atom_positions
+
+    return new_result
 
 class AlphaFold(hk.Module):
   """AlphaFold model with recycling.
+
+  NOTE: Called by model.RunModel
+        Calls AlphaFoldIteration (below)
 
   Jumper et al. (2021) Suppl. Alg. 2 "Inference"
   """
@@ -308,6 +370,8 @@ class AlphaFold(hk.Module):
 
     impl = AlphaFoldIteration(self.config, self.global_config)
     batch_size, num_residues = batch['aatype'].shape
+    print("Batch size (number of ensembles), number of residues:",batch_size, num_residues)
+    print("BATCH INFO",list(batch.keys()),dir(batch))
 
     def get_prev(ret):
       new_prev = {
@@ -322,10 +386,10 @@ class AlphaFold(hk.Module):
                 recycle_idx,
                 compute_loss=compute_loss):
       if self.config.resample_msa_in_recycling:
-        num_ensemble = batch_size // (self.config.num_recycle + 1)
+        num_ensemble_per_slice = batch_size // (self.config.num_recycle + 1)
         def slice_recycle_idx(x):
-          start = recycle_idx * num_ensemble
-          size = num_ensemble
+          start = recycle_idx * num_ensemble_per_slice
+          size = num_ensemble_per_slice
           return jax.lax.dynamic_slice_in_dim(x, start, size, axis=0)
         ensembled_batch = jax.tree_map(slice_recycle_idx, batch)
       else:
@@ -333,6 +397,7 @@ class AlphaFold(hk.Module):
         ensembled_batch = batch
 
       non_ensembled_batch = jax.tree_map(lambda x: x, prev)
+      print("Number of ensembles created",ensembled_batch['seq_length'].shape[0])
 
       return impl(
           ensembled_batch=ensembled_batch,
@@ -387,6 +452,7 @@ class AlphaFold(hk.Module):
 
     if not return_representations:
       del (ret[0] if compute_loss else ret)['representations']  # pytype: disable=unsupported-operands
+
     return ret
 
 
@@ -1715,6 +1781,7 @@ class EmbeddingsAndEvoformer(hk.Module):
     # Inject previous outputs for recycling.
     # Jumper et al. (2021) Suppl. Alg. 2 "Inference" line 6
     # Jumper et al. (2021) Suppl. Alg. 32 "RecyclingEmbedder"
+    # XXX Embedder
     if c.recycle_pos and 'prev_pos' in batch:
       prev_pseudo_beta = pseudo_beta_fn(
           batch['aatype'], batch['prev_pos'], None)

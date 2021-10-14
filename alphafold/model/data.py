@@ -35,5 +35,12 @@ def get_model_haiku_params(model_name: str, data_dir: str) -> hk.Params:
 
   with open(path, 'rb') as f:
     params = np.load(io.BytesIO(f.read()), allow_pickle=False)
+  new_params = {}
+
+  for key in list(params.keys()):
+    new_params[key] = params[key]
+    if key.find('structure_module') > -1:
+      new_params['%s' %(key.replace('structure_module','structure_module_dup'))] = params[key]
+  params = new_params
 
   return utils.flat_params_to_haiku(params)

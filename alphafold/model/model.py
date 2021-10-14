@@ -62,8 +62,14 @@ class RunModel:
           compute_loss=False,
           ensemble_representations=True)
 
-    self.apply = jax.jit(hk.transform(_forward_fn).apply)
-    self.init = jax.jit(hk.transform(_forward_fn).init)
+
+    if (not self.config.data.common.disable_jit):  # Decide whether to use jit
+      self.apply = jax.jit(hk.transform(_forward_fn).apply)
+      self.init = jax.jit(hk.transform(_forward_fn).init)
+    else:
+      print("DISABLING JIT/Haiku")
+      self.apply = hk.transform(_forward_fn).apply
+      self.init = hk.transform(_forward_fn).init
 
   def init_params(self, feat: features.FeatureDict, random_seed: int = 0):
     """Initializes the model parameters.
@@ -127,15 +133,30 @@ class RunModel:
     Returns:
       A dictionary of model outputs.
     """
+    print('Running predict with shape(feat) = %s'
+                 %(tree.map_structure(lambda x: x.shape, feat)))
+
+
     self.init_params(feat)
     logging.info('Running predict with shape(feat) = %s',
                  tree.map_structure(lambda x: x.shape, feat))
     result = self.apply(self.params, jax.random.PRNGKey(0), feat)
-    # This block is to ensure benchmark timings are accurate. Some blocking is
+    # NOTE: this self.apply() statement runs hk.transform().  It sets up hk.get_parameter() with
+    #    the values in self.params (the alphafold parameters from the parameters files),
+    #    initializes random numbers with the key,
+    #    and runs AlphaFold.__call__(feat) with the features.
+
+    # The block below is to ensure benchmark timings are accurate. Some blocking is
     # already happening when computing get_confidence_metrics, and this ensures
     # all outputs are blocked on.
     jax.tree_map(lambda x: x.block_until_ready(), result)
+
     result.update(get_confidence_metrics(result))
-    logging.info('Output shape was %s',
-                 tree.map_structure(lambda x: x.shape, result))
+
+    # Make a model here...
+    print("Making a model from this prediction...")
+    from alphafold.common import protein
+    prot = protein.from_prediction(feat, result)
+    print(protein.to_pdb(prot))
+
     return result

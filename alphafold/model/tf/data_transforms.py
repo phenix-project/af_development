@@ -175,9 +175,12 @@ def sample_msa(protein, max_seq, keep_extra):
   shuffled = tf.random_shuffle(tf.range(1, num_seq))
   index_order = tf.concat([[0], shuffled], axis=0)
   num_sel = tf.minimum(max_seq, num_seq)
-
+  print("selection list:", num_sel)
+  tf.print(index_order)
   sel_seq, not_sel_seq = tf.split(index_order, [num_sel, num_seq - num_sel])
-
+  print("MSA selection:")
+  tf.print(sel_seq)
+  tf.print(not_sel_seq)
   for k in _MSA_FEATURE_NAMES:
     if k in protein:
       if keep_extra:

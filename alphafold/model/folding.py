@@ -303,9 +303,12 @@ class FoldIteration(hk.Module):
                initial_act,
                safe_key=None,
                static_feat_2d=None,
-               aatype=None):
+               aatype=None,
+               batch = None,
+               verbose = True):
     c = self.config
-
+    if verbose:
+      print("\nRunning FoldIteration")
     if safe_key is None:
       safe_key = prng.SafeKey(hk.next_rng_key())
 
@@ -326,7 +329,8 @@ class FoldIteration(hk.Module):
         inputs_1d=act,
         inputs_2d=static_feat_2d,
         mask=sequence_mask,
-        affine=affine)
+        affine=affine)  # XXX Here is what this iteration is doing: attention is
+                        # focused based on the coordinates
     act += attn
     safe_key, *sub_keys = safe_key.split(3)
     sub_keys = iter(sub_keys)
@@ -342,6 +346,8 @@ class FoldIteration(hk.Module):
 
     # Transition
     input_act = act
+    if verbose:
+      print("Running %s transition layers" %(c.num_layer_in_transition))
     for i in range(c.num_layer_in_transition):
       init = 'relu' if i < c.num_layer_in_transition - 1 else final_init
       act = common_modules.Linear(
@@ -351,30 +357,54 @@ class FoldIteration(hk.Module):
               act)
       if i < c.num_layer_in_transition - 1:
         act = jax.nn.relu(act)
-    act += input_act
-    act = safe_dropout_fn(act, next(sub_keys))
-    act = hk.LayerNorm(
-        axis=[-1],
-        create_scale=True,
-        create_offset=True,
-        name='transition_layer_norm')(act)
 
-    if update_affine:
-      # This block corresponds to
-      # Jumper et al. (2021) Alg. 23 "Backbone update"
-      affine_update_size = 6
+    if self.global_config.target_all_atom_positions is not None:
+      assert not is_training
+      import copy
+      saved_act = copy.deepcopy(act)
+      saved_affine = copy.deepcopy(affine)
+      retrieve_saved_values = [False, True]
+      retrieve_saved_values = [False]  # XXX skip for now
+    else:
+      retrieve_saved_values = [False]
 
-      # Affine update
-      affine_update = common_modules.Linear(
-          affine_update_size,
-          initializer=final_init,
-          name='affine_update')(
-              act)
+    #  first test,  then do the real thing
+    #  test ...
 
-      affine = affine.pre_compose(affine_update)
+    weight = 1.
+    for retrieve in retrieve_saved_values:
+      if retrieve:  # run again from the beginning
+        act = saved_act * weight
+        affine = saved_affine
+      act += input_act
+      if is_training:
+        act = safe_dropout_fn(act, next(sub_keys))
+      act = hk.LayerNorm(
+          axis=[-1],
+          create_scale=True,
+          create_offset=True,
+          name='transition_layer_norm')(act)
 
-    sc = MultiRigidSidechain(c.sidechain, self.global_config)(
-        affine.scale_translation(c.position_scale), [act, initial_act], aatype)
+      if update_affine:
+        if verbose:
+          print("Running update_affine")
+        # This block corresponds to
+        # Jumper et al. (2021) Alg. 23 "Backbone update"
+        affine_update_size = 6
+
+        # Affine update
+        affine_update = common_modules.Linear(
+            affine_update_size,
+            initializer=final_init,
+            name='affine_update')(
+                act)
+
+        affine = affine.pre_compose(affine_update)
+
+      if verbose:
+        print("Running MultiRigidSidechain (main-chain in affine)")
+      sc = MultiRigidSidechain(c.sidechain, self.global_config)(
+          affine.scale_translation(c.position_scale), [act, initial_act], aatype)
 
     outputs = {'affine': affine.to_tensor(), 'sc': sc}
 
@@ -388,7 +418,7 @@ class FoldIteration(hk.Module):
 
 
 def generate_affines(representations, batch, config, global_config,
-                     is_training, safe_key):
+                     is_training, safe_key, verbose = True):
   """Generate predicted affines for a single chain.
 
   Jumper et al. (2021) Suppl. Alg. 20 "StructureModule"
@@ -407,6 +437,7 @@ def generate_affines(representations, batch, config, global_config,
   Returns:
     A dictionary containing residue affines and sidechain positions.
   """
+
   c = config
   sequence_mask = batch['seq_mask'][:, None]
 
@@ -422,7 +453,7 @@ def generate_affines(representations, batch, config, global_config,
       c.num_channel, name='initial_projection')(
           act)
 
-  affine = generate_new_affine(sequence_mask)
+  affine = generate_new_affine(sequence_mask) # initialize affines to (0,0,0)
 
   fold_iteration = FoldIteration(
       c, global_config, name='fold_iteration')
@@ -442,7 +473,17 @@ def generate_affines(representations, batch, config, global_config,
 
   outputs = []
   safe_keys = safe_key.split(c.num_layer)
+  if verbose:
+    print("\nRunning %s sets of fold_iteration..." %(
+      len(safe_keys)))
+  kk = 0
+  final_lddt = None
   for sub_key in safe_keys:
+    kk += 1
+    if verbose:
+      print(kk, end = "")
+
+    # Updates activations and coordinates of residues (affines)
     activations, output = fold_iteration(
         activations,
         initial_act=initial_act,
@@ -451,12 +492,29 @@ def generate_affines(representations, batch, config, global_config,
         sequence_mask=sequence_mask,
         update_affine=True,
         is_training=is_training,
-        aatype=batch['aatype'])
-    outputs.append(output)
+        aatype=batch['aatype'],
+        batch = batch,
+        verbose = False)
 
+    # Get local lddt for single fold iteration
+    sc = output['sc']
+    atom14_pred_positions = r3.vecs_to_tensor(sc['atom_pos'])
+    atom37_pred_positions = all_atom.atom14_to_atom37(
+         atom14_pred_positions, batch)
+    s = StructureModule(config, global_config) # using it directly
+    local_lddt = s.local_lddt_score(atom37_pred_positions)
+    print("Local LDDT",local_lddt)
+    # Save last one
+    final_lddt = local_lddt
+
+    outputs.append(output)
+  if verbose:
+    print("done")
   output = jax.tree_map(lambda *x: jnp.stack(x), *outputs)
   # Include the activations in the output dict for use by the LDDT-Head.
   output['act'] = activations['act']
+  if verbose:
+    print("Done with generate_affines ")
 
   return output
 
@@ -475,29 +533,31 @@ class StructureModule(hk.Module):
     self.compute_loss = compute_loss
 
   def __call__(self, representations, batch, is_training,
-               safe_key=None):
+               safe_key=None, return_lddt = False):
     c = self.config
     ret = {}
 
     if safe_key is None:
       safe_key = prng.SafeKey(hk.next_rng_key())
-
+    print("\nRunning StructureModule")
     output = generate_affines(
         representations=representations,
         batch=batch,
         config=self.config,
         global_config=self.global_config,
         is_training=is_training,
-        safe_key=safe_key)
+        safe_key=safe_key,
+        verbose=True)
+    ret['representations'] = {'structure_module': output['act'] }
 
-    ret['representations'] = {'structure_module': output['act']}
-
+    # XXX saving snapshot of coordinates as part of trajectory 'traj'
     ret['traj'] = output['affine'] * jnp.array([1.] * 4 +
                                                [c.position_scale] * 3)
 
     ret['sidechains'] = output['sc']
 
     atom14_pred_positions = r3.vecs_to_tensor(output['sc']['atom_pos'])[-1]
+
     ret['final_atom14_positions'] = atom14_pred_positions  # (N, 14, 3)
     ret['final_atom14_mask'] = batch['atom14_atom_exists']  # (N, 14)
 
@@ -509,13 +569,49 @@ class StructureModule(hk.Module):
     ret['final_atom_mask'] = batch['atom37_atom_exists']  # (N, 37)
     ret['final_affines'] = ret['traj'][-1]
 
-    if self.compute_loss:
-      return ret
+    if return_lddt:
+      if self.global_config['target_all_atom_positions'] is not None:
+        # Compute local lddt (if target_all_atom_positions is available)
+        ret['lddt'] = self.local_lddt_score(atom37_pred_positions)
+      else:
+        ret['lddt'] = None
+      if self.compute_loss:
+        return ret
+      else:
+        no_loss_features = ['final_atom_positions', 'final_atom_mask',
+                            'representations', 'lddt']
+        no_loss_ret = {k: ret[k] for k in no_loss_features}
+        return no_loss_ret
     else:
-      no_loss_features = ['final_atom_positions', 'final_atom_mask',
+      if self.compute_loss:
+        return ret
+      else:
+        no_loss_features = ['final_atom_positions', 'final_atom_mask',
                           'representations']
-      no_loss_ret = {k: ret[k] for k in no_loss_features}
-      return no_loss_ret
+        no_loss_ret = {k: ret[k] for k in no_loss_features}
+        return no_loss_ret
+
+  def local_lddt_score(self, pred_all_atom_pos):
+    if self.global_config['target_all_atom_positions'] is None:
+      return None # nothing to do
+
+    from alphafold.model import lddt
+
+    # Shape (num_res, 37, 3)
+    true_all_atom_pos = self.global_config['target_all_atom_positions']
+
+    # Shape (num_res,)
+    lddt_ca = lddt.lddt(
+        # Shape (batch_size, num_res, 3)
+        predicted_points=pred_all_atom_pos[None, :, 1, :],
+        # Shape (batch_size, num_res, 3)
+        true_points=true_all_atom_pos[None, :, 1, :],
+        # Shape (batch_size, num_res, 1)
+        true_points_mask=None,
+        cutoff=15.,
+        per_residue=False)[0]
+    return lddt_ca
+
 
   def loss(self, value, batch):
     ret = {'loss': 0.}
@@ -557,6 +653,143 @@ class StructureModule(hk.Module):
 
     return ret
 
+
+class StructureModule_dup(hk.Module):
+  """StructureModule as a network head. Duplicate to avoid interference
+
+  Jumper et al. (2021) Suppl. Alg. 20 "StructureModule"
+  """
+
+  def __init__(self, config, global_config, compute_loss=True,
+               name='structure_module_dup'):
+    super().__init__(name=name)
+    self.config = config
+    self.global_config = global_config
+    self.compute_loss = compute_loss
+
+  def __call__(self, representations, batch, is_training,
+               safe_key=None, return_lddt = False, verbose = False):
+
+    # Generate clean safe_key
+    init_key = jax.random.PRNGKey(42)
+    safe_key = prng.SafeKey(init_key)
+
+    output = generate_affines(
+        representations=representations,
+        batch=batch,
+        config=self.config,
+        global_config=self.global_config,
+        is_training=is_training,
+        safe_key=safe_key,
+        verbose=verbose)
+
+    c = self.config
+    ret = {}
+    ret['representations'] = {'structure_module': output['act'] }
+
+    # XXX saving snapshot of coordinates as part of trajectory 'traj'
+    ret['traj'] = output['affine'] * jnp.array([1.] * 4 +
+                                               [c.position_scale] * 3)
+
+    ret['sidechains'] = output['sc']
+
+    atom14_pred_positions = r3.vecs_to_tensor(output['sc']['atom_pos'])[-1]
+
+    ret['final_atom14_positions'] = atom14_pred_positions  # (N, 14, 3)
+    ret['final_atom14_mask'] = batch['atom14_atom_exists']  # (N, 14)
+
+    atom37_pred_positions = all_atom.atom14_to_atom37(atom14_pred_positions,
+                                                      batch)
+    atom37_pred_positions *= batch['atom37_atom_exists'][:, :, None]
+    ret['final_atom_positions'] = atom37_pred_positions  # (N, 37, 3)
+
+    ret['final_atom_mask'] = batch['atom37_atom_exists']  # (N, 37)
+    ret['final_affines'] = ret['traj'][-1]
+
+    if return_lddt:
+      if self.global_config['target_all_atom_positions'] is not None:
+        # Compute local lddt (if target_all_atom_positions is available)
+        ret['lddt'] = self.local_lddt_score(atom37_pred_positions)
+        print("SM-dup lddt",ret['lddt'])
+      else:
+        ret['lddt'] = None
+      if self.compute_loss:
+        return ret
+      else:
+        no_loss_features = ['final_atom_positions', 'final_atom_mask',
+                            'representations', 'lddt']
+        no_loss_ret = {k: ret[k] for k in no_loss_features}
+        return no_loss_ret
+    else:
+      if self.compute_loss:
+        return ret
+      else:
+        no_loss_features = ['final_atom_positions', 'final_atom_mask',
+                          'representations']
+        no_loss_ret = {k: ret[k] for k in no_loss_features}
+        return no_loss_ret
+
+  def local_lddt_score(self, pred_all_atom_pos):
+    if self.global_config['target_all_atom_positions'] is None:
+      return None # nothing to do
+
+    from alphafold.model import lddt
+
+    # Shape (num_res, 37, 3)
+    true_all_atom_pos = self.global_config['target_all_atom_positions']
+
+    # Shape (num_res,)
+    lddt_ca = lddt.lddt(
+        # Shape (batch_size, num_res, 3)
+        predicted_points=pred_all_atom_pos[None, :, 1, :],
+        # Shape (batch_size, num_res, 3)
+        true_points=true_all_atom_pos[None, :, 1, :],
+        # Shape (batch_size, num_res, 1)
+        true_points_mask=None,
+        cutoff=15.,
+        per_residue=False)[0]
+    return lddt_ca
+
+
+  def loss(self, value, batch):
+    ret = {'loss': 0.}
+
+    ret['metrics'] = {}
+    # If requested, compute in-graph metrics.
+    if self.config.compute_in_graph_metrics:
+      atom14_pred_positions = value['final_atom14_positions']
+      # Compute renaming and violations.
+      value.update(compute_renamed_ground_truth(batch, atom14_pred_positions))
+      value['violations'] = find_structural_violations(
+          batch, atom14_pred_positions, self.config)
+
+      # Several violation metrics:
+      violation_metrics = compute_violation_metrics(
+          batch=batch,
+          atom14_pred_positions=atom14_pred_positions,
+          violations=value['violations'])
+      ret['metrics'].update(violation_metrics)
+
+    backbone_loss(ret, batch, value, self.config)
+
+    if 'renamed_atom14_gt_positions' not in value:
+      value.update(compute_renamed_ground_truth(
+          batch, value['final_atom14_positions']))
+    sc_loss = sidechain_loss(batch, value, self.config)
+
+    ret['loss'] = ((1 - self.config.sidechain.weight_frac) * ret['loss'] +
+                   self.config.sidechain.weight_frac * sc_loss['loss'])
+    ret['sidechain_fape'] = sc_loss['fape']
+
+    supervised_chi_loss(ret, batch, value, self.config)
+
+    if self.config.structural_violation_loss_weight:
+      if 'violations' not in value:
+        value['violations'] = find_structural_violations(
+            batch, value['final_atom14_positions'], self.config)
+      structural_violation_loss(ret, batch, value, self.config)
+
+    return ret
 
 def compute_renamed_ground_truth(
     batch: Dict[str, jnp.ndarray],
@@ -667,6 +900,7 @@ def backbone_loss(ret, batch, value, config):
 
   ret['fape'] = fape_loss[-1]
   ret['loss'] += jnp.mean(fape_loss)
+
 
 
 def sidechain_loss(batch, value, config):

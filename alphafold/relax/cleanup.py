@@ -19,13 +19,14 @@ cases like removing chains of length one (see clean_structure).
 """
 import io
 
-import pdbfixer
-from simtk.openmm import app
-from simtk.openmm.app import element
+# import pdbfixer  # XXX do not do anything
+#from openmm import app
+#from openmm.app import element
 
 
 def fix_pdb(pdbfile, alterations_info):
   """Apply pdbfixer to the contents of a PDB file; return a PDB string result.
+   NOT IN USE
 
   1) Replaces nonstandard residues.
   2) Removes heterogens (non protein residues) including water.
@@ -42,6 +43,7 @@ def fix_pdb(pdbfile, alterations_info):
   Returns:
     A PDB string representing the fixed structure.
   """
+  return open(pdbfile).read()  # XXX DO NOTHING
   fixer = pdbfixer.PDBFixer(pdbfile=pdbfile)
   fixer.findNonstandardResidues()
   alterations_info['nonstandard_residues'] = fixer.nonstandardResidues

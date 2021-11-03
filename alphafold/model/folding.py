@@ -305,6 +305,7 @@ class FoldIteration(hk.Module):
                static_feat_2d=None,
                aatype=None,
                batch = None,
+               fixed_affine = None,
                verbose = True):
     c = self.config
     if verbose:
@@ -321,6 +322,8 @@ class FoldIteration(hk.Module):
           is_training=is_training)
 
     affine = quat_affine.QuatAffine.from_tensor(activations['affine'])
+    if fixed_affine is None:
+      fixed_affine = affine
 
     act = activations['act']
     attention_module = InvariantPointAttention(self.config, self.global_config)
@@ -329,7 +332,7 @@ class FoldIteration(hk.Module):
         inputs_1d=act,
         inputs_2d=static_feat_2d,
         mask=sequence_mask,
-        affine=affine)  # XXX Here is what this iteration is doing: attention is
+        affine=fixed_affine)  # XXX Here is what this iteration is doing: attention is
                         # focused based on the coordinates
     act += attn
     safe_key, *sub_keys = safe_key.split(3)
@@ -453,7 +456,21 @@ def generate_affines(representations, batch, config, global_config,
       c.num_channel, name='initial_projection')(
           act)
 
+
   affine = generate_new_affine(sequence_mask) # initialize affines to (0,0,0)
+
+  if 0 and global_config.target_all_atom_positions is not None: # ZZ
+    t=global_config.target_all_atom_positions
+    for i in range(t.shape[0]):
+      print("ZZT",i,t[i,0,:])
+    fixed_affine = get_affine(
+      global_config.target_prot.atom_positions,
+      global_config.target_prot.aatype,
+      global_config.target_prot.atom_mask,
+      )
+    print("TOZZ\n",fixed_affine.to_tensor() )
+  else: # usual
+    fixed_affine = None
 
   fold_iteration = FoldIteration(
       c, global_config, name='fold_iteration')
@@ -477,7 +494,6 @@ def generate_affines(representations, batch, config, global_config,
     print("\nRunning %s sets of fold_iteration..." %(
       len(safe_keys)))
   kk = 0
-  final_lddt = None
   for sub_key in safe_keys:
     kk += 1
     if verbose:
@@ -494,18 +510,23 @@ def generate_affines(representations, batch, config, global_config,
         is_training=is_training,
         aatype=batch['aatype'],
         batch = batch,
+        fixed_affine = fixed_affine if 0 and kk ==1 else None,
         verbose = False)
+    if 0 and kk > 2 and fixed_affine:
+      activations['affine'] =  fixed_affine.to_tensor()
+      print("ZZ fixing")
 
-    # Get local lddt for single fold iteration
-    sc = output['sc']
-    atom14_pred_positions = r3.vecs_to_tensor(sc['atom_pos'])
-    atom37_pred_positions = all_atom.atom14_to_atom37(
+    if 0:
+      # Get local lddt for single fold iteration
+      sc = output['sc']
+      atom14_pred_positions = r3.vecs_to_tensor(sc['atom_pos'])
+      atom37_pred_positions = all_atom.atom14_to_atom37(
          atom14_pred_positions, batch)
-    s = StructureModule(config, global_config) # using it directly
-    local_lddt = s.local_lddt_score(atom37_pred_positions)
-    print("Local LDDT",local_lddt)
-    # Save last one
-    final_lddt = local_lddt
+      s = StructureModule(config, global_config) # using it directly
+      local_lddt = s.local_lddt_score(atom37_pred_positions)
+      print("XYZ\n",atom37_pred_positions[:,0,:])
+      print("Local LDDT",local_lddt)
+      # Save last one
 
     outputs.append(output)
   if verbose:
@@ -707,7 +728,7 @@ class StructureModule_dup(hk.Module):
     ret['final_affines'] = ret['traj'][-1]
 
     if return_lddt:
-      if self.global_config['target_all_atom_positions'] is not None:
+      if 0 and self.global_config['target_all_atom_positions'] is not None: # ZZ
         # Compute local lddt (if target_all_atom_positions is available)
         ret['lddt'] = self.local_lddt_score(atom37_pred_positions)
         print("SM-dup lddt",ret['lddt'])
@@ -1144,6 +1165,18 @@ def supervised_chi_loss(ret, batch, value, config):
   ret['angle_norm_loss'] = angle_norm_loss
   ret['loss'] += config.angle_norm_weight * angle_norm_loss
 
+
+def get_affine(
+     target_all_atom_positions,
+     aatype,
+     atom_mask):
+  from alphafold.common import protein
+  frames = all_atom.atom37_to_frames(
+    aatype,
+    target_all_atom_positions,
+    atom_mask)['rigidgroups_gt_frames']
+  rigids = r3.rigids_from_tensor_flat12(frames[...,0,:])
+  return r3.rigids_to_quataffine(rigids)
 
 def generate_new_affine(sequence_mask):
   num_residues, _ = sequence_mask.shape

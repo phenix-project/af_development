@@ -174,12 +174,17 @@ def rigids_to_list(r: Rigids) -> List[jnp.ndarray]:
 
 def rigids_to_quataffine(r: Rigids) -> quat_affine.QuatAffine:
   """Convert Rigids r into QuatAffine, inverse of 'rigids_from_quataffine'."""
-  return quat_affine.QuatAffine(
-      quaternion=None,
-      rotation=[[r.rot.xx, r.rot.xy, r.rot.xz],
+  rotation=[[r.rot.xx, r.rot.xy, r.rot.xz],
                 [r.rot.yx, r.rot.yy, r.rot.yz],
-                [r.rot.zx, r.rot.zy, r.rot.zz]],
-      translation=[r.trans.x, r.trans.y, r.trans.z])
+                [r.rot.zx, r.rot.zy, r.rot.zz]]
+  translation=[r.trans.x, r.trans.y, r.trans.z]
+  quaternion = quat_affine.rot_to_quat(rotation)
+
+
+  return quat_affine.QuatAffine(
+      quaternion=quaternion,
+      rotation=rotation,
+      translation=translation,)
 
 
 def rigids_to_tensor_flat9(

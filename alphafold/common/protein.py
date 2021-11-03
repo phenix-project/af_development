@@ -124,6 +124,54 @@ def from_pdb_string(pdb_str: str, chain_id: Optional[str] = None) -> Protein:
       residue_index=np.array(residue_index),
       b_factors=np.array(b_factors))
 
+def mmcif_text_to_BioPDB(text):
+  from Bio.PDB import MMCIFParser
+  parser = MMCIFParser()
+  id_value = 'pdb_text'
+  from six.moves import StringIO
+  input = StringIO(text)
+  return parser.get_structure(id_value, input)
+
+def text_to_BioPDB(text):
+  # PDB text get rid of END statement
+  lines = []
+  for line in text.splitlines():
+    line = line.rstrip()
+    if not line.startswith("END"):
+      lines.append(line)
+  text = "\n".join(lines)
+
+  from Bio.PDB import PDBParser
+  parser = PDBParser()
+  id_value = 'pdb_text'
+  from six.moves import StringIO
+  input = StringIO(text)
+  return parser.get_structure(id_value, input)
+
+def BioPDB_to_pdb_text(pdb):
+  from Bio.PDB import PDBIO
+  from six.moves import StringIO
+  PDBio = PDBIO()
+  PDBio.set_structure(pdb)
+  output = StringIO()
+  PDBio.save(output)
+  return output.getvalue()
+
+def BioPDB_to_mmcif_text(pdb):
+  from Bio.PDB import MMCIFIO
+  from six.moves import StringIO
+  PDBio = MMCIFIO()
+  PDBio.set_structure(pdb)
+  output = StringIO()
+  PDBio.save(output)
+  return output.getvalue()
+
+def to_mmcif(prot: Protein) -> str:
+   """ converts to an mmcif object"""
+   pdb_text = to_pdb(prot)
+   pdb = text_to_BioPDB(pdb_text)
+   mmcif_text = BioPDB_to_mmcif_text(pdb)
+   return mmcif_text
 
 def to_pdb(prot: Protein) -> str:
   """Converts a `Protein` instance to a PDB string.

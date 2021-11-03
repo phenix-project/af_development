@@ -93,8 +93,6 @@ def np_example_to_features(np_example: FeatureDict,
     tf.compat.v1.set_random_seed(random_seed)
     tensor_dict = proteins_dataset.np_to_tensor_dict(
         np_example=np_example, features=feature_names)
-    print("Tensor dict keys",tensor_dict.keys())
-    print("resample:",cfg.common.resample_msa_in_recycling, "num_ensemble:",cfg.eval.num_ensemble)
     processed_batch = input_pipeline.process_tensors_from_config(
         tensor_dict, cfg)
   print("Processed batch keys",processed_batch.keys())
@@ -102,16 +100,5 @@ def np_example_to_features(np_example: FeatureDict,
 
   with tf.Session(graph=tf_graph) as sess:
     features = sess.run(processed_batch)
-
-  for k, v in features.items():
-    if k =="msa_feat":
-      n1,n2,n3,n4 = v.shape
-      print("SHAPE:",n1,n2,n3,n4)
-      if n1 > 1:
-        f1 = v[0]
-        f2 = v[1]
-        f12 = f1 - f2
-        a12 = f12[f12 != 0]
-        print ("non-zero diffs for msa:",a12)
 
   return {k: v for k, v in features.items() if v.dtype != 'O'}

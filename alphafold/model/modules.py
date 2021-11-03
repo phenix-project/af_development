@@ -211,41 +211,48 @@ class AlphaFoldIteration(hk.Module):
       def body(x):
         """Add one element to the representations ensemble."""
         i, current_representations = x
- 
+
         feats = slice_batch(i)
 
 
         representations_update = evoformer_module(
             feats, is_training)
-        # Get coordinates for this update with local_structure_head
-        current_representations['msa'] = msa_representation
-        local_result = get_coordinates(local_structure_head, feats,
-         current_representations)
-        del current_representations['msa']
-        weight = local_result['lddt']
-        print("Weight (local lddt) on representation i",i,weight)
 
         new_representations = {}
-        weight = 1.0  # weight to be set
-        for k in current_representations:  # k is like 'single_pair'          
-          new_representations[k] = (  # representations_update[k] is an array
-              current_representations[k] + representations_update[k] * weight)
+        for k in current_representations:  # k is like 'single_pair'
+            new_representations[k] = (  # representations_update[k] is an array
+               current_representations[k] + representations_update[k])
         return i+1, new_representations
+        if 0:
+          # Get coordinates for this update with local_structure_head
+          current_representations['msa'] = msa_representation
+          local_result = get_coordinates(local_structure_head, feats,
+           current_representations)
+          del current_representations['msa']
+          weight = local_result['lddt']
+          print("Weight (local lddt) on representation i",i,weight)
+
+          new_representations = {}
+          weight = 1.0  # weight to be set
+          for k in current_representations:  # k is like 'single_pair'
+            new_representations[k] = (  # representations_update[k] is an array
+               current_representations[k] + representations_update[k] * weight)
+          return i+1, new_representations
       print("Setting up and averaging representations...")
       if hk.running_init():
         # When initializing the Haiku module, run one iteration of the
         # while_loop to initialize the Haiku modules used in `body`.
         _, representations = body((1, representations))
       else:
-  
-        if (not self.global_config.disable_jit): 
+
+        if (not self.global_config.disable_jit):
           _, representations = hk.while_loop(
             lambda x: x[0] < num_ensemble,
             body,
             (1, representations))
         else:  # without haiku/jit
           for ii in range(1, num_ensemble + 1):
-            _, representations = body((ii, representations)) 
+            _, representations = body((ii, representations))
       print(" done with representations (N=%s)" %(num_ensemble))
 
       for k in representations:
@@ -1782,7 +1789,16 @@ class EmbeddingsAndEvoformer(hk.Module):
     # Jumper et al. (2021) Suppl. Alg. 2 "Inference" line 6
     # Jumper et al. (2021) Suppl. Alg. 32 "RecyclingEmbedder"
     # XXX Embedder
-    if c.recycle_pos and 'prev_pos' in batch:
+    if self.global_config.target_all_atom_positions is not None:
+      print("Including target atom positions as if recycling...")
+      prev_pseudo_beta = pseudo_beta_fn(
+          batch['aatype'], self.global_config.target_all_atom_positions, None)
+      dgram = dgram_from_positions(prev_pseudo_beta, **self.config.prev_pos)
+      pair_activations += common_modules.Linear(
+          c.pair_channel, name='prev_pos_linear')(
+              dgram)
+
+    elif c.recycle_pos and 'prev_pos' in batch:
       prev_pseudo_beta = pseudo_beta_fn(
           batch['aatype'], batch['prev_pos'], None)
       dgram = dgram_from_positions(prev_pseudo_beta, **self.config.prev_pos)

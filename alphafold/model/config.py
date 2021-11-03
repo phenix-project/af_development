@@ -327,6 +327,7 @@ CONFIG = ml_collections.ConfigDict({
             'use_remat': False,
             'zero_init': True,
             'target_all_atom_positions': None,  # For comparison
+            'target_prot': None,  # For comparison
             'disable_jit': False, # in two places
         },
         'heads': {
